@@ -28,11 +28,12 @@ import random, os, heapq
 from xml.dom import minidom
 from cPickle import Pickler, Unpickler
 
-try:
-    import sqlite3
-    SQL = True
-except ImportError:
-    SQL = False
+## try:
+# from desktopcouch.records.record import Record
+from desktopcouch.records.server import CouchDatabase
+DB = True
+## except ImportError:
+##     DB = False
 
 try:
     from mirage import Mir, Db, MatrixDimensionMismatchException
@@ -108,6 +109,30 @@ def merge(*subsequences):
             # subseq has been exhausted, therefore remove it from the queue
             heapq.heappop(heap)
 
+DOC_TYPES = {
+    'track': 'http://thisfred.blogspot.com/2009-07/track_schema.html',
+    }
+
+DESIGN_DOCS = {
+    'tracks': {'views': {'get_tracks': {
+        'map': """function(doc) {
+            if (doc.record_type == '%s') {
+                if (doc.album && doc.track_number) {
+                    emit(
+                        [2, doc.artist, doc.album, doc.track_number, doc.name],
+                        null)}
+                else if (doc.track_number) {
+                    emit(
+                        [2, doc.artist, null, doc.track_number, doc.name],
+                        null)}
+                else if (doc.album) {
+                    emit([2, doc.artist, doc.album, null, doc.name], null)}
+                else {
+                    emit([2, doc.artist, null, null, doc.name], null)}}}""" %
+        DOC_TYPES['track']}}},
+    }
+
+
 
 class Throttle(object):
     def __init__(self, wait):
@@ -171,8 +196,10 @@ class AutoQueueBase(object):
     use_db = False
     store_blocked_artists = False
     in_memory = False
-    def __init__(self):
-        self.connection = None
+    def __init__(self, uri='http://localhost:5984'):
+        self.db = CouchDatabase(
+            'music', uri=uri, create=True)
+        self.init_db()
         self.max_track_match = 10000
         self.max_artist_match = 10000
         self.artist_block_time = 1
@@ -201,15 +228,15 @@ class AutoQueueBase(object):
         self.player_set_variables_from_config()
         if self.store_blocked_artists:
             self.get_blocked_artists_pickle()
-        if self.use_db:
-            self.check_db()
         if MIRAGE:
             self.mir = Mir()
 
-    def close_database_connection(self, connection):
-        if self.in_memory:
-            return
-        connection.close()
+    def init_db(self):
+        """initialize database, if necessary"""
+        for doc in DESIGN_DOCS:
+            if self.db.has_design_document(doc):
+                continue
+            self.db.add_design_document(doc, DESIGN_DOCS[doc])
 
     def player_get_userdir(self):
         """get the application user directory to store files"""
@@ -255,16 +282,6 @@ class AutoQueueBase(object):
         for dummy in method(*args, **kwargs):
             pass
 
-    def check_db(self):
-        if self.in_memory:
-            self.create_db()
-            return
-        try:
-            os.stat(self.get_db_path())
-        except OSError:
-            self.create_db()
-        self.create_indices()
-
     def get_blocked_artists_pickle(self):
         dump = os.path.join(
             self.player_get_userdir(), "autoqueue_block_cache")
@@ -283,24 +300,6 @@ class AutoQueueBase(object):
                 pickle.close()
         except IOError:
             pass
-
-    def get_db_path(self):
-        if self.in_memory:
-            return ":memory:"
-        return os.path.join(self.player_get_userdir(), "similarity.db")
-
-    def get_database_connection(self):
-        """get database reference"""
-        if self.in_memory:
-            if self.connection:
-                return self.connection
-            self.connection = sqlite3.connect(":memory:")
-            self.connection.text_factory = str
-            return self.connection
-        connection = sqlite3.connect(
-            self.get_db_path(), timeout=5.0, isolation_level="immediate")
-        connection.text_factory = str
-        return connection
 
     def disallowed(self, song):
         if song.get_artist() in self.get_blocked_artists():
@@ -588,28 +587,12 @@ class AutoQueueBase(object):
         except:
             return None
 
-    def get_artist(self, artist_name, with_connection=None):
+    def get_artist(self, artist_name):
         """get artist information from the database"""
-        if with_connection:
-            connection = with_connection
-        else:
-            connection = self.get_database_connection()
-        artist_name = artist_name.encode("UTF-8")
-        rows = connection.execute(
-            "SELECT * FROM artists WHERE name = ?", (artist_name,))
+        rows = self.db.view(
+            'artists', 'get_artists', startkey=artist_name, endkey=artist_name)
         for row in rows:
             return row
-        connection.execute(
-            "INSERT INTO artists (name) VALUES (?)", (artist_name,))
-        connection.commit()
-        rows = connection.execute(
-            "SELECT * FROM artists WHERE name = ?", (artist_name,))
-        for row in rows:
-            if not with_connection:
-                self.close_database_connection(connection)
-            return row
-        if not with_connection:
-            self.close_database_connection(connection)
 
     def get_track(self, artist_name, title, with_connection=None):
         """get track information from the database"""

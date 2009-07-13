@@ -1,9 +1,7 @@
 # -*- coding: utf-8 -*-
-import random
-from collections import deque
 from datetime import datetime, timedelta
 from xml.dom import minidom
-from nose.tools import assert_equals, assert_not_equals
+from nose.tools import assert_equals
 from autoqueue import SongBase, AutoQueueBase, Throttle
 
 
